@@ -1,0 +1,134 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function isSuperAdmin() { return signedIn() && request.auth.token.superAdmin == true; }
+    function ownProfile() { return get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data; }
+    function hasProfile() { return signedIn() && exists(/databases/$(database)/documents/usuarios/$(request.auth.uid)); }
+    function role() { return ownProfile().cargo; }
+    function profileStore() { return ownProfile().lojaId; }
+    function isStoreIdentity(lojaId) {
+      return hasProfile() && profileStore() == lojaId && ownProfile().status == 'active';
+    }
+    function subscriptionActive(lojaId) {
+      return exists(/databases/$(database)/documents/lojas/$(lojaId)/assinatura/atual)
+        && ((get(/databases/$(database)/documents/lojas/$(lojaId)/assinatura/atual).data.status == 'trial'
+              && get(/databases/$(database)/documents/lojas/$(lojaId)/assinatura/atual).data.dataFim > request.time)
+          || (get(/databases/$(database)/documents/lojas/$(lojaId)/assinatura/atual).data.status == 'active'
+              && (get(/databases/$(database)/documents/lojas/$(lojaId)/assinatura/atual).data.periodo == 'vitalicio'
+                || get(/databases/$(database)/documents/lojas/$(lojaId)/assinatura/atual).data.dataFim > request.time)));
+    }
+    function storeEnabled(lojaId) {
+      return exists(/databases/$(database)/documents/lojas/$(lojaId))
+        && get(/databases/$(database)/documents/lojas/$(lojaId)).data.status == 'active'
+        && subscriptionActive(lojaId);
+    }
+    function storeMember(lojaId) { return isStoreIdentity(lojaId) && storeEnabled(lojaId); }
+    function isOwner(lojaId) { return storeMember(lojaId) && role() == 'admin'; }
+    function isSeller(lojaId) { return storeMember(lojaId) && role() == 'vendedorTecnico'; }
+    function isTechnician(lojaId) { return storeMember(lojaId) && role() == 'tecnico'; }
+    function canReadStock(lojaId) { return isOwner(lojaId) || isSeller(lojaId) || isTechnician(lojaId); }
+    function canManageStock(lojaId) { return isOwner(lojaId); }
+    function keysOnly(keys) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys); }
+
+    match /usuarios/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || isSuperAdmin());
+      allow create: if false;
+      allow update: if signedIn() && request.auth.uid == uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['nome', 'telefone', 'updatedAt'])
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.cargo == resource.data.cargo
+        && request.resource.data.lojaId == resource.data.lojaId
+        && request.resource.data.superAdmin == resource.data.superAdmin;
+      allow delete: if false;
+    }
+
+    match /lojas/{lojaId} {
+      // A loja pode ler apenas dados não sensíveis do documento raiz mesmo se a assinatura vencer,
+      // para visualizar seu status e orientar o proprietário a regularizar a conta.
+      allow read: if isSuperAdmin() || (isStoreIdentity(lojaId));
+      allow create, delete: if false;
+      allow update: if isOwner(lojaId)
+        && keysOnly(['nome', 'telefone', 'endereco', 'documento', 'observacaoImpressao', 'updatedAt'])
+        && request.resource.data.ownerUid == resource.data.ownerUid
+        && request.resource.data.status == resource.data.status;
+
+      match /auditoriaOS/{eventId} {
+        allow read: if storeMember(lojaId) && role() in ['admin', 'vendedorTecnico', 'tecnico'];
+        allow create, update, delete: if false;
+      }
+
+      match /ordensServico/{osId} {
+        allow read: if storeMember(lojaId) && (role() in ['admin', 'vendedorTecnico', 'tecnico']);
+        // Criação e atualização usam endpoint server-side: valida contador sequencial e senha criptografada.
+        allow create, update, delete: if false;
+      }
+
+      match /produtos/{produtoId} {
+        allow read: if canReadStock(lojaId);
+        // Alterações passam pelo endpoint para registrar movimentos e proteger consistência.
+        allow create, update, delete: if false;
+      }
+
+      match /estoqueCustos/{produtoId} {
+        allow read: if isOwner(lojaId);
+        allow create, update, delete: if false;
+      }
+
+      match /movimentacoesEstoque/{movementId} {
+        allow read: if isOwner(lojaId) || isSeller(lojaId);
+        allow create, update, delete: if false;
+      }
+
+      match /vendas/{saleId} {
+        allow read: if isOwner(lojaId) || isSeller(lojaId);
+        allow create, update, delete: if false;
+      }
+      match /vendaRequests/{requestId} { allow read, write: if false; }
+
+      match /caixas/{caixaId} {
+        allow read: if isOwner(lojaId) || isSeller(lojaId);
+        allow create, update, delete: if false;
+      }
+      match /movimentacoesCaixa/{movementId} {
+        allow read: if isOwner(lojaId) || isSeller(lojaId);
+        allow create, update, delete: if false;
+      }
+      match /reembolsosPendentes/{refundId} {
+        allow read: if isOwner(lojaId);
+        allow create, update, delete: if false;
+      }
+      match /controle/{controlId} { allow read, write: if false; }
+
+      match /funcionarios/{funcionarioId} {
+        allow read: if isOwner(lojaId);
+        allow create, update, delete: if false;
+      }
+      match /rhFinanceiro/{entryId} {
+        allow read: if isOwner(lojaId);
+        allow create: if isOwner(lojaId)
+          && request.resource.data.keys().hasOnly(['funcionarioId','funcionarioNome','tipo','valor','descricao','competencia','responsavelUid','responsavelNome','createdAt'])
+          && request.resource.data.responsavelUid == request.auth.uid
+          && request.resource.data.valor is number && request.resource.data.valor >= 0;
+        allow update, delete: if isOwner(lojaId);
+      }
+      match /configuracoes/{configId} {
+        allow read: if storeMember(lojaId) && configId == 'geral';
+        allow create: if false;
+        allow update: if isOwner(lojaId) && configId == 'geral'
+          && keysOnly(['statusOS','updatedAt'])
+          && request.resource.data.contadorOS == resource.data.contadorOS;
+        allow delete: if false;
+      }
+      match /assinatura/{subscriptionId} {
+        allow read: if isSuperAdmin() || (isStoreIdentity(lojaId) && role() == 'admin' && subscriptionId == 'atual');
+        allow create, update, delete: if false;
+      }
+      match /auditoria/{eventId} { allow read: if isSuperAdmin(); allow create, update, delete: if false; }
+      match /{document=**} { allow read, write: if false; }
+    }
+
+    match /configuracoesSaaS/{docId} { allow read, write: if isSuperAdmin(); }
+    match /{document=**} { allow read, write: if false; }
+  }
+}

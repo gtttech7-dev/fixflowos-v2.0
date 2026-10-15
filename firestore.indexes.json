@@ -1,0 +1,35 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "ordensServico",
+      "queryScope": "COLLECTION",
+      "fields": [ { "fieldPath": "numeroOS", "order": "DESCENDING" } ]
+    },
+    {
+      "collectionGroup": "vendas",
+      "queryScope": "COLLECTION",
+      "fields": [ { "fieldPath": "createdAt", "order": "DESCENDING" } ]
+    },
+    {
+      "collectionGroup": "caixas",
+      "queryScope": "COLLECTION",
+      "fields": [ { "fieldPath": "abertoEm", "order": "DESCENDING" } ]
+    },
+    {
+      "collectionGroup": "movimentacoesCaixa",
+      "queryScope": "COLLECTION",
+      "fields": [ { "fieldPath": "createdAt", "order": "DESCENDING" } ]
+    },
+    {
+      "collectionGroup": "funcionarios",
+      "queryScope": "COLLECTION",
+      "fields": [ { "fieldPath": "nome", "order": "ASCENDING" } ]
+    },
+    {
+      "collectionGroup": "rhFinanceiro",
+      "queryScope": "COLLECTION",
+      "fields": [ { "fieldPath": "createdAt", "order": "DESCENDING" } ]
+    }
+  ],
+  "fieldOverrides": []
+}
